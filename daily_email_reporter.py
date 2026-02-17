@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 from datetime import datetime
 import os
+from difflib import SequenceMatcher
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -61,9 +62,9 @@ class DailyEmailReporter:
             print("📡 1단계: RSS 피드 수집 중...")
             self.rss_monitor.collect_feeds()
             
-            # 2. 팩트체크 대상 조회
+            # 2. 팩트체크 대상 조회 (더 많은 기사를 가져와서 중복 제거)
             print("🔍 2단계: 팩트체크 대상 분석 중...")
-            pending_articles = self.rss_monitor.get_pending_articles(limit=10)
+            pending_articles = self.rss_monitor.get_pending_articles(limit=20)
         
         if not pending_articles:
             print("ℹ️  오늘은 팩트체크 대상 기사가 없습니다.")
@@ -74,29 +75,25 @@ class DailyEmailReporter:
         print(f"📊 3단계: {len(pending_articles)}개 기사 상세 분석 중...")
         analyzed_articles = []
         
-        for url, title, source, score in pending_articles[:5]:  # 최대 5개만
+        for url, title, source, score in pending_articles:
             try:
                 article = self.extractor.extract(url)
                 if not article:
                     print(f"  ⚠️ 본문 추출 실패: {url}")
-                    # 실패 시 예외 처리: 제목만으로 분석 진행
                     article = {
                         'title': title,
-                        'text': '',  # 본문 없음
+                        'text': '',
                         'source': source,
-                        'date': datetime.now().strftime('%Y-%m-%d')
+                        'date': datetime.now().strftime('%Y-%m-%d'),
+                        'journalist': 'Unknown'
                     }
-                    print(f"  ↪️ 제목 기반 분석으로 전환합니다.")
                 
-                print(f"  📄 본문 길이: {len(article.get('text', ''))}자")
+                print(f"  📄 본문 길이: {len(article.get('text', ''))}자 | 기자: {article.get('journalist', 'Unknown')}")
                 
                 claims = self.detector.detect(article['text'])
                 has_vague = self.detector.has_vague_source(article['text'])
                 score_result = self.scorer.calculate_score(article, claims, has_vague)
                 
-                print(f"  📊 점수: {score_result['total_score']} (세부: {score_result['breakdown']})")
-                
-                # [수정] 수동 모드이거나 점수가 높으면 결과에 포함
                 if manual_url or score_result['should_factcheck']:
                     analyzed_articles.append({
                         'url': url,
@@ -104,20 +101,79 @@ class DailyEmailReporter:
                         'claims': claims,
                         'score': score_result
                     })
-                    print(f"  ✓ {article.get('title', title)[:50]}... (점수: {score_result['total_score']})")
+                    print(f"  ✓ {article.get('title', title)[:30]}... ({score_result['total_score']}점)")
                 
             except Exception as e:
                 print(f"  ❌ 분석 실패: {e}")
         
-        # 4. 이메일 전송
+        # 3.5 중복 제거
         if analyzed_articles:
-            print(f"\n📧 4단계: 이메일 전송 중... ({len(analyzed_articles)}개 기사)")
-            self._send_factcheck_email(analyzed_articles)
+            print(f"\n🗑️ 중복 제거 전: {len(analyzed_articles)}건")
+            final_articles = self._deduplicate_articles(analyzed_articles)
+            print(f"✨ 중복 제거 후: {len(final_articles)}건")
+            
+            # 3.6 기자 통계 업데이트 (최종 선정된 기사에 대해서만)
+            for item in final_articles:
+                journalist = item['article'].get('journalist')
+                source = item['article'].get('source')
+                if journalist and journalist != 'Unknown':
+                    self.rss_monitor.update_journalist_stats(journalist, source)
+                    print(f"  📈 기자 통계 업데이트: {journalist} ({source})")
+        else:
+            final_articles = []
+
+        # 4. 이메일 전송
+        if final_articles:
+            print(f"\n📧 4단계: 이메일 전송 중... ({len(final_articles)}개 기사)")
+            self._send_factcheck_email(final_articles)
             print("✅ 이메일 전송 완료!")
         else:
             print("\nℹ️  상세 분석 결과 팩트체크 대상이 없습니다.")
             self._send_no_articles_email()
     
+    def _deduplicate_articles(self, articles):
+        """기사 중복 제거 및 관련 기사 그룹화"""
+        unique_articles = []
+        skip_indices = set()
+        
+        # 날짜순 정렬 (오래된 기사 우선 = 원본 추정)
+        # 날짜 형식이 제각각일 수 있으므로 주의 필요 (여기서는 일단 문자열 정렬)
+        sorted_articles = sorted(articles, key=lambda x: x['article']['date'])
+        
+        for i in range(len(sorted_articles)):
+            if i in skip_indices:
+                continue
+                
+            current = sorted_articles[i]
+            group = [current]
+            
+            for j in range(i + 1, len(sorted_articles)):
+                if j in skip_indices:
+                    continue
+                
+                compare = sorted_articles[j]
+                
+                # 제목 유사도 비교
+                similarity = SequenceMatcher(None, current['article']['title'], compare['article']['title']).ratio()
+                
+                if similarity > 0.6:  # 60% 이상 비슷하면 같은 이슈로 간주
+                    group.append(compare)
+                    skip_indices.add(j)
+            
+            # 그룹 처리
+            selected = group[0]  # 가장 빠른 기사
+            selected['related_count'] = len(group) - 1
+            # 관련 기사 정보 저장 (언론사, 시간, 기자)
+            selected['related_info'] = [
+                f"{item['article']['source']} ({item['article'].get('journalist', 'Unknown')})" 
+                for item in group[1:]
+            ]
+            
+            unique_articles.append(selected)
+            
+        # 최대 5개까지만 리포트
+        return unique_articles[:5]
+
     def _add_manual_link_footer(self, html_content):
         """이메일 하단에 수동 검증 링크 추가"""
         footer_link = '''
@@ -134,16 +190,11 @@ class DailyEmailReporter:
 
     def _send_factcheck_email(self, articles):
         """팩트체크 리포트 이메일 전송"""
-        # HTML 이메일 생성
         html_content = self._generate_html_report(articles)
-        
-        # 하단 링크 추가 [수정]
         html_content = self._add_manual_link_footer(html_content)
         
-        # 이메일 메시지 생성
         msg = MIMEMultipart('alternative')
         
-        # 이메일 제목 설정 (수동 모드인지 확인)
         if os.getenv('ARTICLE_URL'):
             msg['Subject'] = f"🔧 수동 팩트체크 리포트 - {datetime.now().strftime('%Y년 %m월 %d일')}"
             footer_text = "이 리포트는 사용자의 요청에 의해 수동으로 생성되었습니다."
@@ -154,17 +205,8 @@ class DailyEmailReporter:
         msg['From'] = self.sender_email
         msg['To'] = self.recipient_email
         
-        # Footer 텍스트 추가
-        html_content = html_content.replace('</body>', f'''
-            <p style="color: #666; font-size: 12px; text-align: center; margin-top: 20px;">
-                {footer_text}
-            </p>
-        </body>''')
+        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
         
-        html_part = MIMEText(html_content, 'html', 'utf-8')
-        msg.attach(html_part)
-        
-        # SMTP 전송
         try:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
@@ -202,8 +244,6 @@ class DailyEmailReporter:
         </body>
         </html>
         """
-        
-        # 하단 링크 추가 [수정]
         html_content = self._add_manual_link_footer(html_content)
         
         msg = MIMEMultipart('alternative')
@@ -211,8 +251,7 @@ class DailyEmailReporter:
         msg['From'] = self.sender_email
         msg['To'] = self.recipient_email
         
-        html_part = MIMEText(html_content, 'html', 'utf-8')
-        msg.attach(html_part)
+        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
         
         try:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
@@ -225,12 +264,46 @@ class DailyEmailReporter:
     
     def _generate_html_report(self, articles):
         """HTML 리포트 생성"""
+        # 우수 기자 순위 가져오기
+        top_journalists = self.rss_monitor.get_top_journalists(limit=3)
+        journalist_table = ""
+        
+        if top_journalists:
+            journalist_rows = ""
+            for i, (name, aff, count) in enumerate(top_journalists, 1):
+                icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else str(i)
+                journalist_rows += f"""
+                <tr>
+                    <td style="padding: 8px; border-bottom: 1px solid #eee;">{icon} <strong>{name}</strong> ({aff})</td>
+                    <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">{count}건</td>
+                </tr>
+                """
+            
+            journalist_table = f"""
+            <div style="margin: 20px 0; padding: 15px; background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;">
+                <h3 style="margin-top: 0; margin-bottom: 15px; color: #24292e;">🏆 이달의 팩트체크 기자 (Hall of Fame)</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    {journalist_rows}
+                </table>
+            </div>
+            """
+
         articles_html = ""
         
         for i, item in enumerate(articles, 1):
             article = item['article']
             claims = item['claims']
             score = item['score']
+            
+            # 관련 기사 표시
+            related_html = ""
+            if item.get('related_count', 0) > 0:
+                related_sources = ', '.join(item['related_info'])
+                related_html = f"""
+                <div style="margin-top: 10px; padding: 10px; background: #f1f8ff; border-radius: 5px; font-size: 13px; color: #0366d6;">
+                    <strong>🔗 관련 보도 ({item['related_count']}건):</strong> {related_sources} 등
+                </div>
+                """
             
             # 주장 목록 HTML
             claims_html = ""
@@ -240,59 +313,32 @@ class DailyEmailReporter:
                     'causal': '🔗 인과관계',
                     'extreme': '⚠️ 극단 표현'
                 }.get(claim['type'], claim['type'])
-                
-                claims_html += f"""
-                <li>
-                    <strong>[{claim_type}]</strong> {claim['claim'][:100]}...
-                    <br><small>신뢰도: {claim['confidence']}</small>
-                </li>
-                """
+                claims_html += f"<li><strong>[{claim_type}]</strong> {claim['claim'][:100]}...<br><small>신뢰도: {claim['confidence']}</small></li>"
             
-            # 우선순위 색상
-            priority_color = {
-                'HIGH': '#e74c3c',
-                'MEDIUM': '#f39c12',
-                'LOW': '#95a5a6'
-            }.get(score['priority'], '#95a5a6')
+            priority_color = {'HIGH': '#e74c3c', 'MEDIUM': '#f39c12', 'LOW': '#95a5a6'}.get(score['priority'], '#95a5a6')
             
             articles_html += f"""
             <div style="border: 1px solid #ddd; border-radius: 10px; padding: 20px; margin-bottom: 20px; background: #f9f9f9;">
-                <h3 style="margin-top: 0;">
-                    [{i}] {article['title']}
-                </h3>
-                
+                <h3 style="margin-top: 0;">[{i}] {article['title']}</h3>
                 <p style="color: #666;">
                     <strong>언론사:</strong> {article['source']} | 
+                    <strong>기자:</strong> {article.get('journalist', 'Unknown')} |
                     <strong>발행일:</strong> {article['date']}
                 </p>
+                {related_html}
                 
                 <div style="background: white; padding: 15px; border-radius: 5px; margin: 10px 0;">
                     <p style="margin: 5px 0;">
                         <strong>우선순위 점수:</strong> 
-                        <span style="color: {priority_color}; font-size: 20px; font-weight: bold;">
-                            {score['total_score']}점
-                        </span>
-                        <span style="background: {priority_color}; color: white; padding: 3px 8px; border-radius: 3px; margin-left: 10px;">
-                            {score['priority']}
-                        </span>
+                        <span style="color: {priority_color}; font-size: 20px; font-weight: bold;">{score['total_score']}점</span>
+                        <span style="background: {priority_color}; color: white; padding: 3px 8px; border-radius: 3px; margin-left: 10px;">{score['priority']}</span>
                     </p>
-                    
-                    <p style="margin: 5px 0;">
-                        <strong>발견된 주장:</strong> {score['claims_count']}개
-                        (통계: {score['statistical_claims']}, 인과관계: {score['causal_claims']}, 극단: {score['extreme_claims']})
-                    </p>
+                    <p style="margin: 5px 0;"><strong>발견된 주장:</strong> {score['claims_count']}개</p>
                 </div>
                 
                 <h4>🔍 주요 주장</h4>
-                <ul>
-                    {claims_html}
-                </ul>
-                
-                <p>
-                    <a href="{item['url']}" style="background: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                        원문 보기 →
-                    </a>
-                </p>
+                <ul>{claims_html}</ul>
+                <p><a href="{item['url']}" style="background: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; display: inline-block;">원문 보기 →</a></p>
             </div>
             """
         
@@ -320,21 +366,14 @@ class DailyEmailReporter:
                         <strong>모니터링 상태:</strong> ✅ 정상
                     </p>
                 </div>
+
+                {journalist_table}
                 
-                <h2>🎯 팩트체크 대상 기사</h2>
+                <h2>🎯 팩트체크 대상 기사 (최초 보도 우선)</h2>
                 {articles_html}
                 
                 <hr style="margin: 30px 0;">
                 
-                <div style="background: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107;">
-                    <h3>💡 다음 단계</h3>
-                    <ol>
-                        <li>각 기사의 주장을 검증 가능한 데이터로 확인</li>
-                        <li>정부 공식 통계 조회 (KOSIS, BOK, NTS)</li>
-                        <li>데이터 대조 및 차트 생성</li>
-                        <li>팩트체크 리포트 작성</li>
-                    </ol>
-                </div>
             </div>
         </body>
         </html>

@@ -59,7 +59,8 @@ class ArticleExtractor:
                 'text': text,
                 'date': metadata.date if metadata and metadata.date else datetime.now().strftime('%Y-%m-%d'),
                 'source': metadata.sitename if metadata and metadata.sitename else self._extract_domain(url),
-                'journalist': self._extract_journalist(text)
+                # 메타데이터 저자 우선 사용, 없으면 본문에서 추출
+                'journalist': metadata.author if metadata and metadata.author else self._extract_journalist(text)
             }
             
         except Exception as e:

@@ -1,0 +1,13 @@
+requests>=2.31.0
+pandas>=2.1.0
+matplotlib>=3.8.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+python-dotenv>=1.0.0
+
+# Article Discovery & Processing
+newspaper3k>=0.2.8
+feedparser>=6.0.10
+schedule>=1.2.0
+sqlalchemy>=2.0.0
+trafilatura>=1.6.0

@@ -56,7 +56,7 @@ class DailyEmailReporter:
         if manual_url:
             print(f"🔧 수동 검증 모드: {manual_url}")
             # 가짜 RSS 엔트리 생성
-            pending_articles = [(manual_url, "수동 입력 기사", "User Input", 100)]
+            pending_articles = [(manual_url, "수동 입력 기사 (제목 분석 중)", "User Input", 100)]
         else:
             print("📡 1단계: RSS 피드 수집 중...")
             self.rss_monitor.collect_feeds()
@@ -96,14 +96,15 @@ class DailyEmailReporter:
                 
                 print(f"  📊 점수: {score_result['total_score']} (세부: {score_result['breakdown']})")
                 
-                if score_result['should_factcheck']:
+                # [수정] 수동 모드이거나 점수가 높으면 결과에 포함
+                if manual_url or score_result['should_factcheck']:
                     analyzed_articles.append({
                         'url': url,
                         'article': article,
                         'claims': claims,
                         'score': score_result
                     })
-                    print(f"  ✓ {title[:50]}... (점수: {score_result['total_score']})")
+                    print(f"  ✓ {article.get('title', title)[:50]}... (점수: {score_result['total_score']})")
                 
             except Exception as e:
                 print(f"  ❌ 분석 실패: {e}")
@@ -117,10 +118,27 @@ class DailyEmailReporter:
             print("\nℹ️  상세 분석 결과 팩트체크 대상이 없습니다.")
             self._send_no_articles_email()
     
+    def _add_manual_link_footer(self, html_content):
+        """이메일 하단에 수동 검증 링크 추가"""
+        footer_link = '''
+            <div style="margin-top: 30px; text-align: center; padding: 20px; background: #f9f9f9; border-radius: 10px;">
+                <p><strong>직접 기사를 검증하고 싶으신가요?</strong></p>
+                <a href="https://github.com/chkyoo/factcheck-engine/actions/workflows/daily-factcheck.yml" 
+                   style="background: #2dba4e; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                   👉 수동 검증 하러가기
+                </a>
+                <p style="font-size: 12px; color: #666; margin-top: 10px;">GitHub Actions > Run workflow 버튼을 눌러 URL을 입력하세요.</p>
+            </div>
+        '''
+        return html_content.replace('</body>', f'{footer_link}</body>')
+
     def _send_factcheck_email(self, articles):
         """팩트체크 리포트 이메일 전송"""
         # HTML 이메일 생성
         html_content = self._generate_html_report(articles)
+        
+        # 하단 링크 추가 [수정]
+        html_content = self._add_manual_link_footer(html_content)
         
         # 이메일 메시지 생성
         msg = MIMEMultipart('alternative')
@@ -136,22 +154,14 @@ class DailyEmailReporter:
         msg['From'] = self.sender_email
         msg['To'] = self.recipient_email
         
-        # HTML 파트 추가 (수동 검증 링크 포함)
-        html_with_link = html_content.replace('</body>', f'''
-            <div style="margin-top: 30px; text-align: center; padding: 20px; background: #f9f9f9; border-radius: 10px;">
-                <p><strong>직접 기사를 검증하고 싶으신가요?</strong></p>
-                <a href="https://github.com/chkyoo/factcheck-engine/actions/workflows/daily-factcheck.yml" 
-                   style="background: #2dba4e; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                   👉 수동 검증 하러가기
-                </a>
-                <p style="font-size: 12px; color: #666; margin-top: 10px;">GitHub Actions > Run workflow 버튼을 눌러 URL을 입력하세요.</p>
-            </div>
+        # Footer 텍스트 추가
+        html_content = html_content.replace('</body>', f'''
             <p style="color: #666; font-size: 12px; text-align: center; margin-top: 20px;">
                 {footer_text}
             </p>
         </body>''')
         
-        html_part = MIMEText(html_with_link, 'html', 'utf-8')
+        html_part = MIMEText(html_content, 'html', 'utf-8')
         msg.attach(html_part)
         
         # SMTP 전송
@@ -187,14 +197,14 @@ class DailyEmailReporter:
                     <p><strong>금일 팩트체크가 필요한 기사가 발견되지 않았습니다.</strong></p>
                     <p>모니터링은 정상적으로 수행되었으며, 우선순위 70점 이상의 기사가 없었습니다.</p>
                     <hr>
-                    <p style="color: #666; font-size: 12px;">
-                        이 이메일은 팩트체크 엔진에서 자동으로 발송되었습니다.
-                    </p>
                 </div>
             </div>
         </body>
         </html>
         """
+        
+        # 하단 링크 추가 [수정]
+        html_content = self._add_manual_link_footer(html_content)
         
         msg = MIMEMultipart('alternative')
         msg['Subject'] = f"📊 일일 팩트체크 리포트 - {datetime.now().strftime('%Y년 %m월 %d일')} (대상 없음)"
@@ -325,11 +335,6 @@ class DailyEmailReporter:
                         <li>팩트체크 리포트 작성</li>
                     </ol>
                 </div>
-                
-                <p style="color: #666; font-size: 12px; text-align: center; margin-top: 30px;">
-                    이 이메일은 팩트체크 엔진에서 자동으로 발송되었습니다.<br>
-                    매일 오전 9시에 전날의 뉴스를 분석하여 전송됩니다.
-                </p>
             </div>
         </body>
         </html>

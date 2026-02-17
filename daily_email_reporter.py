@@ -278,15 +278,24 @@ class DailyEmailReporter:
                     <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">{count}건</td>
                 </tr>
                 """
-            
-            journalist_table = f"""
-            <div style="margin: 20px 0; padding: 15px; background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;">
-                <h3 style="margin-top: 0; margin-bottom: 15px; color: #24292e;">🏆 이달의 팩트체크 기자 (Hall of Fame)</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    {journalist_rows}
-                </table>
-            </div>
+        else:
+            journalist_rows = """
+            <tr>
+                <td colspan="2" style="padding: 15px; text-align: center; color: #666;">
+                    🌱 아직 데이터가 충분하지 않습니다.<br>
+                    (오늘부터 기자별 통계가 누적되기 시작합니다!)
+                </td>
+            </tr>
             """
+            
+        journalist_table = f"""
+        <div style="margin: 20px 0; padding: 15px; background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;">
+            <h3 style="margin-top: 0; margin-bottom: 15px; color: #24292e;">🏆 이달의 팩트체크 기자 (Hall of Fame)</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                {journalist_rows}
+            </table>
+        </div>
+        """
 
         articles_html = ""
         

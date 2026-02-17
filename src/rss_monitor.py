@@ -61,6 +61,15 @@ class RSSMonitor:
             )
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journalists (
+                name TEXT PRIMARY KEY,
+                affiliation TEXT,
+                total_selected INTEGER DEFAULT 0,
+                last_selected_date TEXT
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -183,6 +192,54 @@ class RSSMonitor:
         conn.close()
         
         return articles
+    
+    def update_journalist_stats(self, name: str, affiliation: str):
+        """기자 통계 업데이트"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            # 기자 존재 여부 확인
+            cursor.execute('SELECT total_selected FROM journalists WHERE name = ?', (name,))
+            row = cursor.fetchone()
+            
+            if row:
+                # 존재하면 카운트 증가
+                cursor.execute('''
+                    UPDATE journalists 
+                    SET total_selected = total_selected + 1, last_selected_date = ? 
+                    WHERE name = ?
+                ''', (today, name))
+            else:
+                # 없으면 신규 등록
+                cursor.execute('''
+                    INSERT INTO journalists (name, affiliation, total_selected, last_selected_date)
+                    VALUES (?, ?, 1, ?)
+                ''', (name, affiliation, today))
+            
+            conn.commit()
+        except Exception as e:
+            print(f"❌ 기자 통계 업데이트 실패: {e}")
+        finally:
+            conn.close()
+
+    def get_top_journalists(self, limit=3):
+        """우수 기자 순위 조회"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT name, affiliation, total_selected 
+            FROM journalists 
+            ORDER BY total_selected DESC, last_selected_date DESC 
+            LIMIT ?
+        ''', (limit,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
 
 
 def main():

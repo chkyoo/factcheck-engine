@@ -58,7 +58,8 @@ class ArticleExtractor:
                 'title': metadata.title if metadata and metadata.title else 'Unknown',
                 'text': text,
                 'date': metadata.date if metadata and metadata.date else datetime.now().strftime('%Y-%m-%d'),
-                'source': metadata.sitename if metadata and metadata.sitename else self._extract_domain(url)
+                'source': metadata.sitename if metadata and metadata.sitename else self._extract_domain(url),
+                'journalist': self._extract_journalist(text)
             }
             
         except Exception as e:
@@ -70,6 +71,15 @@ class ArticleExtractor:
         from urllib.parse import urlparse
         parsed = urlparse(url)
         return parsed.netloc
+
+    def _extract_journalist(self, text: str) -> str:
+        """기자 이름 추출"""
+        import re
+        # 패턴: "홍길동 기자", "박철수 특파원" (가장 먼저 발견되는 이름)
+        match = re.search(r'([가-힣]{2,4})\s*(기자|특파원)', text)
+        if match:
+            return match.group(1)
+        return "Unknown"
 
 
 if __name__ == "__main__":

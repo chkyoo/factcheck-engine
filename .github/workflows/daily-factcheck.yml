@@ -2,8 +2,13 @@ name: Daily Fact Check
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 매일 00:00 UTC (한국 시간 09:00)
-  workflow_dispatch:      # 수동 실행 가능
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      article_url:
+        description: 'Article URL (수동 검증할 기사 주소)'
+        required: false
+        type: string
 
 jobs:
   run-factcheck:
@@ -29,5 +34,6 @@ jobs:
         SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
         SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        ARTICLE_URL: ${{ inputs.article_url }}
       run: |
         python daily_email_reporter.py
